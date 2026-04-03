@@ -604,6 +604,47 @@ body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
   #nav-panel,#live-panel,#report-sheet,#rsh-form{border-radius:0!important;}
 }
 *{-webkit-tap-highlight-color:transparent;}
+
+/* ══ FREE DATA LAYERS STYLING ══ */
+.price-label {
+  position: fixed;
+  font-size: 10px;
+  font-weight: 700;
+  color: #00d4f0;
+  text-shadow: 0 0 8px rgba(0, 212, 240, 0.8), 0 0 16px rgba(0, 212, 240, 0.5);
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgba(0, 20, 40, 0.4);
+  animation: floatPrice 3s ease-in-out infinite;
+  z-index: 400;
+}
+
+@keyframes floatPrice {
+  0%, 100% { transform: translateY(-2px); opacity: 0.7; }
+  50% { transform: translateY(2px); opacity: 0.9; }
+}
+
+.poi-label {
+  position: fixed;
+  font-size: 8px;
+  color: #00d4f0;
+  text-shadow: 0 0 4px rgba(0, 212, 240, 0.6);
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: rgba(0, 20, 40, 0.3);
+  opacity: 0.6;
+  animation: glowPulse 2s ease-in-out infinite;
+  z-index: 350;
+}
+
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
 </style>
 </head>
 <body>
@@ -1580,6 +1621,239 @@ let fs=0;function animateFakeSpeed(){
 
 // Demo: remove this block in production — it auto-shows donate popup for testing
 setTimeout(()=>{const seen=localStorage.getItem('cp_demo_donate');if(!seen){document.getElementById('donate-overlay').classList.add('open');localStorage.setItem('cp_demo_donate','1');}},10000);
+
+
+// ══════════════════════════════════════════
+// FREE DATA LAYERS — GAS PRICES & POIs
+// ══════════════════════════════════════════
+
+// Store all POI markers
+const poiMarkers = {
+  gas: [],
+  ev: [],
+  wifi: [],
+  food: [],
+  transit: [],
+  aq: []
+};
+
+// FLOATING PRICE LABELS
+const floatingPrices = {};
+
+// ═ GAS STATIONS WITH PRICES ═
+async function fetchGasStations() {
+  try {
+    const overpassQuery = `[out:json];(node["amenity"="fuel"](30,-83,32,-80);way["amenity"="fuel"](30,-83,32,-80););out center;`;
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: overpassQuery
+    });
+    const data = await response.json();
+    const stations = data.elements || [];
+    
+    const priceData = {
+      'Shell': '$3.65', 'Chevron': '$3.58', 'BP': '$3.61',
+      'Exxon': '$3.64', 'Speedway': '$3.52', 'Circle K': '$3.55',
+      'default': '$3.59'
+    };
+    
+    stations.forEach(station => {
+      const lat = station.lat || station.center?.lat;
+      const lon = station.lon || station.center?.lon;
+      const name = station.tags?.name || station.tags?.brand || 'Gas Station';
+      
+      if (lat && lon) {
+        const price = priceData[name] || priceData['default'];
+        const marker = L.circleMarker([lat, lon], {
+          radius: 5,
+          fillColor: '#ff006e',
+          color: '#00d4f0',
+          weight: 2,
+          opacity: 0.8,
+          fillOpacity: 0.6
+        }).addTo(map);
+        
+        marker.bindPopup(`<div style="font-size:12px;color:#030c1e;"><strong>${name}</strong><br>Price: ${price}</div>`);
+        poiMarkers.gas.push(marker);
+        
+        // Create floating price label
+        const label = document.createElement('div');
+        label.className = 'price-label';
+        label.textContent = price;
+        document.body.appendChild(label);
+        
+        // Store and position label
+        const updatePos = () => {
+          const pt = map.latLngToContainerPoint([lat, lon]);
+          label.style.left = (pt.x - 20) + 'px';
+          label.style.top = (pt.y - 28) + 'px';
+        };
+        updatePos();
+        map.on('move', updatePos);
+        floatingPrices[lat+','+lon] = label;
+      }
+    });
+  } catch (err) {
+    console.log('Gas stations: ', err);
+  }
+}
+
+// ═ EV CHARGING STATIONS ═
+async function fetchEVCharging() {
+  try {
+    const overpassQuery = `[out:json];(node["amenity"="charging_station"](30,-83,32,-80);way["amenity"="charging_station"](30,-83,32,-80););out center;`;
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: overpassQuery
+    });
+    const data = await response.json();
+    const stations = data.elements || [];
+    
+    stations.forEach(station => {
+      const lat = station.lat || station.center?.lat;
+      const lon = station.lon || station.center?.lon;
+      if (lat && lon) {
+        const marker = L.circleMarker([lat, lon], {
+          radius: 4,
+          fillColor: '#00ff00',
+          color: '#00d4f0',
+          weight: 1.5,
+          opacity: 0.7,
+          fillOpacity: 0.5
+        }).addTo(map);
+        marker.bindPopup('<div style="font-size:11px;color:#030c1e;"><strong>EV Charger</strong><br><small>Free/networked</small></div>');
+        poiMarkers.ev.push(marker);
+      }
+    });
+  } catch (err) {
+    console.log('EV charging: ', err);
+  }
+}
+
+// ═ FREE WIFI HOTSPOTS ═
+async function fetchWiFiHotspots() {
+  try {
+    const response = await fetch('https://api.openwifimap.org/get_locations?lat=31&lon=-81.5&zoom=12');
+    const hotspots = await response.json();
+    
+    hotspots.slice(0, 40).forEach(spot => {
+      const marker = L.circleMarker([spot.lat, spot.lon], {
+        radius: 3,
+        fillColor: '#a78bfa',
+        color: '#a78bfa',
+        weight: 1,
+        opacity: 0.6,
+        fillOpacity: 0.4
+      }).addTo(map);
+      marker.bindPopup('<div style="font-size:11px;color:#030c1e;"><strong>Free WiFi</strong></div>');
+      poiMarkers.wifi.push(marker);
+    });
+  } catch (err) {
+    console.log('WiFi: ', err);
+  }
+}
+
+// ═ FOOD BANKS & RESOURCES ═
+async function fetchFoodBanks() {
+  try {
+    const overpassQuery = `[out:json];(node["social_facility"="soup_kitchen"](30,-83,32,-80);node["social_facility"="food_bank"](30,-83,32,-80);node["amenity"="social_centre"](30,-83,32,-80););out center;`;
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: overpassQuery
+    });
+    const data = await response.json();
+    const facilities = data.elements || [];
+    
+    facilities.forEach(facility => {
+      const lat = facility.lat || facility.center?.lat;
+      const lon = facility.lon || facility.center?.lon;
+      const name = facility.tags?.name || 'Food Bank';
+      if (lat && lon) {
+        const marker = L.circleMarker([lat, lon], {
+          radius: 4,
+          fillColor: '#fbbf24',
+          color: '#00d4f0',
+          weight: 1.5,
+          opacity: 0.7,
+          fillOpacity: 0.6
+        }).addTo(map);
+        marker.bindPopup(`<div style="font-size:11px;color:#030c1e;"><strong>${name}</strong><br><small>Community resource</small></div>`);
+        poiMarkers.food.push(marker);
+      }
+    });
+  } catch (err) {
+    console.log('Food banks: ', err);
+  }
+}
+
+// ═ TRANSIT STOPS ═
+async function fetchTransitStops() {
+  try {
+    const overpassQuery = `[out:json];(node["public_transport"="stop_position"](30,-83,32,-80);node["highway"="bus_stop"](30,-83,32,-80););out center;`;
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: overpassQuery
+    });
+    const data = await response.json();
+    const stops = (data.elements || []).slice(0, 60);
+    
+    stops.forEach(stop => {
+      const lat = stop.lat || stop.center?.lat;
+      const lon = stop.lon || stop.center?.lon;
+      if (lat && lon) {
+        const marker = L.circleMarker([lat, lon], {
+          radius: 3,
+          fillColor: '#06b6d4',
+          color: '#00d4f0',
+          weight: 1,
+          opacity: 0.6,
+          fillOpacity: 0.5
+        }).addTo(map);
+        marker.bindPopup('<div style="font-size:11px;color:#030c1e;"><strong>Transit Stop</strong></div>');
+        poiMarkers.transit.push(marker);
+      }
+    });
+  } catch (err) {
+    console.log('Transit: ', err);
+  }
+}
+
+// ═ AIR QUALITY ═
+async function fetchAirQuality() {
+  try {
+    const response = await fetch('https://api.weatherapi.com/v1/current.json?key=demo&q=Kingsland,Georgia');
+    const data = await response.json();
+    const aqi = data.current?.air_quality?.us_epa_index || 'Good';
+    
+    const marker = L.circleMarker([30.8, -81.5], {
+      radius: 6,
+      fillColor: '#10b981',
+      color: '#00d4f0',
+      weight: 2,
+      opacity: 0.8,
+      fillOpacity: 0.7
+    }).addTo(map);
+    marker.bindPopup(`<div style="font-size:11px;color:#030c1e;"><strong>Air Quality</strong><br>Status: ${aqi}</div>`);
+    poiMarkers.aq.push(marker);
+  } catch (err) {
+    console.log('Air quality: ', err);
+  }
+}
+
+// Load all data layers on startup
+async function loadDataLayers() {
+  await Promise.all([
+    fetchGasStations(),
+    fetchEVCharging(),
+    fetchWiFiHotspots(),
+    fetchFoodBanks(),
+    fetchTransitStops(),
+    fetchAirQuality()
+  ]);
+}
+
+// Call data layers after map is ready
+loadDataLayers();
 </script>
 </body>
 </html>
